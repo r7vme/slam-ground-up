@@ -10,6 +10,8 @@ MIN_FEATURES = 50
 CAMERA_FOCAL = 707
 CAMERA_PP = (602, 183)
 
+TRAJ_WIN_SIZE = 512
+
 # params for ShiTomasi corner detection
 feature_params = dict( maxCorners = 100,
                        qualityLevel = 0.3,
@@ -29,7 +31,7 @@ def imggen():
     for f in sorted(os.listdir(IMAGE_DIR)):
         img_path = os.path.join(IMAGE_DIR, f)
         img = cv2.imread(img_path)
-        img = cv2.cvtColor(cv2.COLOR_BGR2GRAY)
+        img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         yield img
 
 # 1. Capture images I_t and I_t+1.
@@ -52,12 +54,8 @@ def run():
     # Get initial image.
     img0 = imgs.__next__()
 
-    # Mask for drawing feature trajectories.
-    mask = np.zeros_like(img0)
-
     # Window for trajectory drawing.
-    win_size = 512
-    traj = np.zeros((win_size,win_size,3), np.uint8)
+    traj = np.zeros((TRAJ_WIN_SIZE, TRAJ_WIN_SIZE, 3), np.uint8)
 
     for img1 in imgs:
         # Check for new features only if we have less that min_features.
@@ -65,9 +63,10 @@ def run():
             p0 = cv2.goodFeaturesToTrack(img0,
                                          mask = None,
                                          **feature_params)
+            mask = np.zeros_like(img0)
 
         p1, st, err = cv2.calcOpticalFlowPyrLK(img0,
-                                               frame,
+                                               img1,
                                                p0,
                                                None,
                                                **lk_params)
@@ -102,16 +101,20 @@ def run():
         x = t_final[0]
         y = t_final[2]
 
-
+        frame = img1.copy()
         # draw the tracks
         for i,(new,old) in enumerate(zip(p1_good,p0_good)):
             a,b = new.ravel()
             c,d = old.ravel()
-            mask = cv2.line(mask, (a,b), (c,d), (0,255,0), 2)
-            frame = cv2.circle(frame, (a,b), 5, (0,128,0), -1)
+            mask = cv2.line(mask, (a,b), (c,d), (255), 2)
+            frame = cv2.circle(frame, (a,b), 5, (255), -1)
         img = cv2.add(frame, mask)
 
-        traj = cv2.circle(traj, (x,y), 5, (0,128,0), -1)
+        traj = cv2.circle(traj,
+                          (x+TRAJ_WIN_SIZE/2,y+TRAJ_WIN_SIZE/2),
+                          5,
+                          (0,128,0),
+                          -1)
 
         cv2.imshow('frame', img)
         cv2.imshow('traj', traj)
