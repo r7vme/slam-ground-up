@@ -5,12 +5,16 @@ import cv2
 import time
 import numpy as np
 
-IMAGE_DIR="image_3"
-MIN_FEATURES = 50
-CAMERA_FOCAL = 707
-CAMERA_PP = (602, 183)
+import pykitti
 
-TRAJ_WIN_SIZE = 512
+IMAGE_DIR='image_3'
+KITTI_DIR = 'dataset'
+KITTI_SEQ = '02'
+KITTI_FRAMES = 50
+MIN_FEATURES = 100
+TRAJ_WIN_SIZE = 1200
+TRAJ_INIT_PT = TRAJ_WIN_SIZE/2
+POSES_FILE = 'poses.txt'
 
 # params for ShiTomasi corner detection
 feature_params = dict( maxCorners = 100,
@@ -23,23 +27,15 @@ lk_params = dict( winSize  = (15, 15),
                   maxLevel = 2,
                   criteria = (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 10, 0.03))
 
-
-# imggen gererator that reads images from
-# directory and convert then to gray.
-# TODO: Filter non PNG files.
-def imggen():
-    for f in sorted(os.listdir(IMAGE_DIR)):
-        img_path = os.path.join(IMAGE_DIR, f)
-        img = cv2.imread(img_path)
-        img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        yield img
+def imggen(ds):
+    for img in ds.cam2:
+        yield np.asarray(img.convert('L'), dtype=np.uint8)
 
 # 1. Capture images I_t and I_t+1.
-# 2. Undostort images I_t and I_t+1.
-# 3. Detect features (ORB) I_t and track features I_t+1.
-# 4. Nister's 5-point + RANSAC to compute essential matrix.
-# 5. Estimate rotation (R) and translation (t) from essential matrix.
-# 6. Scale R and t with external source.
+# 2. Detect features on I_t and compute optical flow with I_t+1.
+# 3. Nister's 5-point + RANSAC to compute essential matrix.
+# 4. Estimate rotation (R) and translation (t) from essential matrix.
+# 5. Draw point on map (x, y) calculated from R and t.
 def run():
     # Prepare initial position rotation (R) and translation (t) matrices.
     R_final = np.array([[ 1.0, 0.0, 0.0],
@@ -49,14 +45,34 @@ def run():
 
     p0 = None
 
-    imgs = imggen()
+    # Initialize KITTI dataset.
+    ds = pykitti.odometry(KITTI_DIR, KITTI_SEQ, frames=range(0, KITTI_FRAMES))
+
+    # Get camera matrix from calibration data.
+    camera_matrix = ds.calib.K_cam3
 
     # Get initial image.
+    imgs = imggen(ds)
     img0 = imgs.__next__()
 
     # Window for trajectory drawing.
     traj = np.zeros((TRAJ_WIN_SIZE, TRAJ_WIN_SIZE, 3), np.uint8)
 
+    # Draw ground truth.
+    for i in range(0, KITTI_FRAMES):
+        # Get translation matrix t.
+        t = ds.poses[i][:3,3]
+
+        x = int(t[0])
+        # y seems inverted in ground truth.
+        y = -int(t[2])
+        traj = cv2.circle(traj,
+                          (int(x + TRAJ_INIT_PT),int(y + TRAJ_INIT_PT)),
+                          2,
+                          (0,255,0),
+                          -1)
+
+    poses = []
     for img1 in imgs:
         # Check for new features only if we have less that min_features.
         if (p0 is None) or (p0.size < MIN_FEATURES):
@@ -71,15 +87,14 @@ def run():
                                                None,
                                                **lk_params)
 
-        # Select good points
+        # Select good points.
         p1_good = p1[st==1]
         p0_good = p0[st==1]
 
         # Find essential matrix.
         E, _ = cv2.findEssentialMat(p0_good,
                                     p1_good,
-                                    CAMERA_FOCAL,
-                                    CAMERA_PP,
+                                    camera_matrix,
                                     cv2.RANSAC,
                                     0.999, 1.0)
 
@@ -87,22 +102,23 @@ def run():
         _, R, t, _ = cv2.recoverPose(E,
                                      p0_good,
                                      p1_good,
-                                     focal=CAMERA_FOCAL,
-                                     pp=CAMERA_PP)
+                                     camera_matrix)
 
         # TODO: We also need to scale our coordinates.
         # For now let's say we use relative coordinates.
 
         # Accumulate rotation and translation.
-        R_final = np.dot(R, R_final)
         t_final += np.dot(R_final, t)
+        R_final = np.dot(R, R_final)
+
+        poses.append(np.concatenate((R_final, t_final), axis=1))
 
         # Final coordinates.
         x = t_final[0]
         y = t_final[2]
 
         frame = img1.copy()
-        # draw the tracks
+        # Draw the tracks.
         for i,(new,old) in enumerate(zip(p1_good,p0_good)):
             a,b = new.ravel()
             c,d = old.ravel()
@@ -111,9 +127,9 @@ def run():
         img = cv2.add(frame, mask)
 
         traj = cv2.circle(traj,
-                          (x+TRAJ_WIN_SIZE/2,y+TRAJ_WIN_SIZE/2),
-                          5,
-                          (0,128,0),
+                          (x+TRAJ_INIT_PT,y+TRAJ_INIT_PT),
+                          2,
+                          (255,0,0),
                           -1)
 
         cv2.imshow('frame', img)
@@ -127,9 +143,12 @@ def run():
         img0 = img1.copy()
         p0 = p1_good.reshape(-1,1,2)
 
-def main():
-    run()
+    # Write results to file.
+    with open(POSES_FILE, "w+") as f:
+        for p in poses:
+            s = ' '.join(['%.6e' % i for i in p.flatten()])
+            f.write(s + '\n')
     cv2.destroyAllWindows()
 
 if __name__ == "__main__":
-    main()
+    run()
