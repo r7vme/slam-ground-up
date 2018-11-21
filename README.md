@@ -1,3 +1,3 @@
-# SLAM with OpenCV2
+This project is just my "trial and error" notebook of implementing SLAM for monocular camera from scratch
 
-My variant of implementation of monocular SLAM from scratch.
+Inspired by https://github.com/geohot/twitchslam
