@@ -10,23 +10,12 @@ import pykitti
 IMAGE_DIR='image_3'
 KITTI_DIR = 'dataset'
 KITTI_SEQ = '02'
-KITTI_FRAMES = 50
-MIN_FEATURES = 100
+KITTI_FRAMES = 1000
 TRAJ_WIN_SIZE = 1200
 TRAJ_INIT_PT = TRAJ_WIN_SIZE/2
 POSES_FILE = 'poses.txt'
 
-# params for ShiTomasi corner detection
-feature_params = dict( maxCorners = 100,
-                       qualityLevel = 0.3,
-                       minDistance = 7,
-                       blockSize = 7 )
-
-# Settings for the LK tracker and the corner detector
-lk_params = dict( winSize  = (15, 15),
-                  maxLevel = 2,
-                  criteria = (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 10, 0.03))
-
+# Only to convert to grayscale. Not needed for grayscale ds.
 def imggen(ds):
     for img in ds.cam2:
         yield np.asarray(img.convert('L'), dtype=np.uint8)
@@ -43,8 +32,6 @@ def run():
                         [ 0.0, 0.0, 1.0]])
     t_final = np.zeros((3,1))
 
-    p0 = None
-
     # Initialize KITTI dataset.
     ds = pykitti.odometry(KITTI_DIR, KITTI_SEQ, frames=range(0, KITTI_FRAMES))
 
@@ -53,7 +40,6 @@ def run():
 
     # Get initial image.
     imgs = imggen(ds)
-    img0 = imgs.__next__()
 
     # Window for trajectory drawing.
     traj = np.zeros((TRAJ_WIN_SIZE, TRAJ_WIN_SIZE, 3), np.uint8)
@@ -72,36 +58,37 @@ def run():
                           (0,255,0),
                           -1)
 
+    # Initialize ORB. TODO: Tune params.
+    orb = cv2.ORB_create()
+
+    # Detect and compute descriptors for first image.
+    img0 = imgs.__next__()
+    kps0, des0 = orb.detectAndCompute(img0,None)
+    kp0 = np.array([(kp.pt[0], kp.pt[1]) for kp in kps0])
+
     poses = []
     for img1 in imgs:
-        # Check for new features only if we have less that min_features.
-        if (p0 is None) or (p0.size < MIN_FEATURES):
-            p0 = cv2.goodFeaturesToTrack(img0,
-                                         mask = None,
-                                         **feature_params)
-            mask = np.zeros_like(img0)
+        # Detect and compute descriptors.
+        kps1, des1 = orb.detectAndCompute(img1,None)
+        kp1 = np.array([(kp.pt[0], kp.pt[1]) for kp in kps1])
 
-        p1, st, err = cv2.calcOpticalFlowPyrLK(img0,
-                                               img1,
-                                               p0,
-                                               None,
-                                               **lk_params)
+        # Match features.
+        bf = cv2.BFMatcher(cv2.NORM_HAMMING)
+        matches = bf.match(des0,des1)
+        matches = [m for m in matches if m.distance < 32]
+        print(len(matches))
+        # TODO: It's slow and does not work!!!
 
-        # Select good points.
-        p1_good = p1[st==1]
-        p0_good = p0[st==1]
-
-        # Find essential matrix.
-        E, _ = cv2.findEssentialMat(p0_good,
-                                    p1_good,
+        E, _ = cv2.findEssentialMat(kp0,
+                                    kp1,
                                     camera_matrix,
                                     cv2.RANSAC,
                                     0.999, 1.0)
 
         # Estimate rotation and translation.
         _, R, t, _ = cv2.recoverPose(E,
-                                     p0_good,
-                                     p1_good,
+                                     kp0,
+                                     kp1,
                                      camera_matrix)
 
         # TODO: We also need to scale our coordinates.
@@ -119,12 +106,9 @@ def run():
 
         frame = img1.copy()
         # Draw the tracks.
-        for i,(new,old) in enumerate(zip(p1_good,p0_good)):
-            a,b = new.ravel()
-            c,d = old.ravel()
-            mask = cv2.line(mask, (a,b), (c,d), (255), 2)
-            frame = cv2.circle(frame, (a,b), 5, (255), -1)
-        img = cv2.add(frame, mask)
+        #for i,(new,old) in p1_good,:
+        #    a,b = new.ravel()
+        #    frame = cv2.circle(frame, (a,b), 5, (255), -1)
 
         traj = cv2.circle(traj,
                           (x+TRAJ_INIT_PT,y+TRAJ_INIT_PT),
@@ -132,7 +116,7 @@ def run():
                           (255,0,0),
                           -1)
 
-        cv2.imshow('frame', img)
+        cv2.imshow('frame', frame)
         cv2.imshow('traj', traj)
 
         k = cv2.waitKey(30) & 0xff
@@ -141,7 +125,8 @@ def run():
 
         # Use new as old one in next iteration.
         img0 = img1.copy()
-        p0 = p1_good.reshape(-1,1,2)
+        kp0 = kp1.copy()
+        des0 = des1.copy()
 
     # Write results to file.
     with open(POSES_FILE, "w+") as f:
