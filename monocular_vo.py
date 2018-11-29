@@ -1,4 +1,20 @@
 #!/usr/bin/env python3
+# Copyright (c) 2018 Roma Sokolkov
+# MIT License
+
+"""
+Tries to estimate 2D trajectory from video.
+
+1. Capture frames I_t and I_t+1.
+2. Find keypoints, compute descritors with ORB.
+3. Find good matches with bruteforce matcher.
+4. Find essential matrix with Nister's 5-point + RANSAC.
+5. Get rotation (R) and translation (t) from essential matrix.
+
+As output:
+- writes poses.txt with poses in KITTI format
+- prints L2 distance
+"""
 
 import os
 import cv2
@@ -47,12 +63,6 @@ def compute_l1_l2(ds, poses_xy):
     return L1, math.sqrt(L2)
 
 
-# 1. Capture images I_t and I_t+1.
-# 2. Find keypoints, compute descritors.
-# 3. Find good matches with bruteforce matcher.
-# 4. Nister's 5-point + RANSAC to compute essential matrix.
-# 5. Estimate rotation (R) and translation (t) from essential matrix.
-# 6. Draw point on map (x, y) calculated from R and t.
 def run(scale=SCALE, max_distance=32, headless=HEADLESS):
     start_time = time.time()
     # Prepare initial position rotation (R) and translation (t) matrices.
